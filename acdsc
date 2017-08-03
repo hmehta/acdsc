@@ -326,6 +326,84 @@ server_settings = OrderedDict([
     })
 ])
 
+session_settings = OrderedDict([
+    ('BOOK',
+     OrderedDict([
+         ('NAME', {
+            'default': 'Booking',
+            'description': 'booking session - add this section only if your '
+                           'server is in booking mode',
+            'validator': click.STRING
+            }),
+         ('TIME', {
+            'default': '5',
+            'description': 'session length in minutes',
+            'validator': click.IntRange(0)
+            })])),
+    ('PRACTICE',
+     OrderedDict([
+         ('NAME', {
+            'default': 'Free Practice',
+            'description': 'practice session',
+            'validator': click.STRING
+            }),
+         ('TIME', {
+            'default': '0',
+            'description': 'session length in minutes',
+            'validator': click.IntRange(0)
+            }),
+         ('IS_OPEN', {
+            'default': '1',
+            'description': '0 = no join, 1 = free join',
+            'validator': click.IntRange(0, 1)
+            })])),
+    ('QUALIFY',
+     OrderedDict([
+         ('NAME', {
+            'default': 'Qualify',
+            'description': 'qualify session',
+            'validator': click.STRING
+            }),
+         ('TIME', {
+            'default': '5',
+            'description': 'session length in minutes',
+            'validator': click.IntRange(0)
+            }),
+         ('IS_OPEN', {
+            'default': '1',
+            'description': '0 = no join, 1 = free join',
+            'validator': click.IntRange(0, 1)
+            })])),
+    ('RACE',
+     OrderedDict([
+         ('NAME', {
+            'default': 'Race',
+            'description': 'race session',
+            'validator': click.STRING
+            }),
+         ('TIME', {
+            'default': '0',
+            'description': 'length of the timed races only if laps = 0',
+            'validator': click.IntRange(0)
+            }),
+         ('IS_OPEN', {
+            'default': '2',
+            'description': '0 = no join, 1 = free join, '
+                           '2 = free join until 20 seconds to the green light',
+            'validator': click.IntRange(0, 2)
+            }),
+         ('LAPS', {
+            'default': '5',
+            'description': 'length of the lap races',
+            'validator': click.IntRange(0)
+            }),
+         ('WAIT_TIME', {
+            'default': '60',
+            'description': 'seconds before the start of the session',
+            'validator': click.IntRange(1)
+            })]))
+])
+
 entry_list_template = '''
 [CAR_{num}]
 DRIVERNAME=
@@ -352,6 +430,7 @@ class multidict(OrderedDict):
             unique_key += str(self._unique)
             val['__multidict_key__'] = key
         OrderedDict.__setitem__(self, unique_key, val)
+        return unique_key
 
 
 class ACParser(cp.ConfigParser):
@@ -362,6 +441,15 @@ class ACParser(cp.ConfigParser):
     def __init__(self, *args, **kwargs):
         kwargs['dict_type'] = multidict
         cp.ConfigParser.__init__(self, *args, **kwargs)
+
+    def add_section(self, section):
+        if section.lower() == 'default':
+            raise ValueError, 'Invalid section name {}'.format(section)
+        # do not raise DuplicateSectionError, just let multidict handle it's
+        # shit
+        self._sections[section] = self._dict()
+        sections = filter(lambda s: s.startswith(section), self._sections)
+        return sorted(sections)[-1]
 
     def _read(self, fp, fpname):
         # copypasta from ConfigParser.py, just modify the section part to
@@ -473,6 +561,13 @@ def convert_ini_key(ini_key):
     return ini_key.lower().replace('_', '-')
 
 
+def to_ini(kv):
+    key, value = kv
+    if value is not None:
+        return (convert_key(key), value.encode('utf-8'))
+    return (convert_key(key), value)
+
+
 def make_server_config_parser(config_file):
     parser = ACParser()
     parser.read(config_file)
@@ -483,9 +578,11 @@ def dynamic_options(options):
     from click.decorators import option
     def decorator(f):
         for key, value in reversed(options.items()):
+            help_msg = '{}  [default: {}]'.format(
+                    value['description'], value['default'])
             f = option('--{}'.format(convert_ini_key(key)),
                        type=value['validator'],
-                       help=value['description'])(f)
+                       help=help_msg)(f)
         return f
     return decorator
 
@@ -496,6 +593,14 @@ class SteamPath(click.Path):
         return super(SteamPath, self).convert(
             os.path.join(ctx.params['steam_dir'], value), param, ctx)
 
+
+def write_config_file(config):
+    parser = config['parser']
+    config_file = config['server-config-file']
+    click.secho('Writing new configuration to {}'.format(config_file))
+    # TODO: write actual file
+    parser.write(open('new.cfg', 'w'))
+    # parser.write(open(config_file, 'w'))
 
 
 ## Click group
@@ -552,14 +657,7 @@ def server_list(config):
 @dynamic_options(server_settings)
 @click.pass_context
 def server_set(ctx, with_defaults, **kwargs):
-    def to_ini(kv):
-        key, value = kv
-        if value is not None:
-            return (convert_key(key), value.encode('utf-8'))
-        return (convert_key(key), value)
-
     parser = ctx.obj['parser']
-    config_file = ctx.obj['server-config-file']
     # Set configuration values when given
     if any(kwargs.values()):
         for key, value in map(to_ini, kwargs.items()):
@@ -578,10 +676,7 @@ def server_set(ctx, with_defaults, **kwargs):
                 click.secho('Setting non-given {} to default value {}'.format(
                             key, value['default']))
                 parser.set('SERVER', key, value['default'])
-        click.secho('Writing new configuration to {}'.format(config_file))
-        # TODO: write actual file
-        parser.write(open('new.cfg', 'w'))
-        # parser.write(open(config_file, 'w'))
+        write_config_file(ctx.obj)
     ctx.invoke(server_list)
 
 
@@ -590,7 +685,7 @@ def server_set(ctx, with_defaults, **kwargs):
 @server.command('session-list')
 @click.pass_obj
 def session_list(config):
-    valid_sessions = ('PRACTICE', 'QUALIFY', 'RACE')
+    valid_sessions = session_settings.keys()
     parser = config['parser']
     for section in parser.sections():
         options = dict(parser.items(section))
@@ -599,7 +694,7 @@ def session_list(config):
             del options['__multidict_key__']
         else:
             session = section
-        if session in valid_sessions:
+        if session in session_settings:
             click.secho('[{}]'.format(session), fg='green')
             for key, value in options.items():
                 click.echo('{:<20}: {}'.format(key, value))
@@ -607,6 +702,39 @@ def session_list(config):
 
 ## add a session
 # acdsc server add-session
+@server.group('add-session')
+def add_session():
+    pass
+
+
+# this dude is a distant relative of black adder ^_^
+def make_session_adder(session_type, options):
+    @add_session.command(session_type)
+    @dynamic_options(options)
+    @click.pass_context
+    def session_adder(ctx, **kwargs):
+        parser = ctx.obj['parser']
+        click.secho('Adding {} session:'.format(session_type), fg='yellow')
+        section_key = parser.add_section(session_type)
+        for key, value in map(to_ini, kwargs.items()):
+            if value is None:
+                value = options[key]['default']
+                click.secho('Setting non-given {} to default value {}'.format(
+                            key, value))
+            else:
+                click.secho('Setting {} to {}'.format(key, value))
+            parser.set(section_key, key, value)
+        write_config_file(ctx.obj)
+    return session_adder
+
+
+for session_type, options in session_settings.items():
+    defname = 'add_{}_session'.format(session_type)
+    globals()[defname] = make_session_adder(session_type, options)
+
+
+## remove a session
+# acdsc server del-session
 ## print out current weathers
 # acdsc server weather-list
 ## add a weather
