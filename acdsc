@@ -1,0 +1,687 @@
+#!/usr/bin/python2.7
+
+import ConfigParser as cp
+import os
+
+from collections import OrderedDict
+from functools import update_wrapper
+from itertools import cycle
+from operator import itemgetter
+
+import click
+
+
+# Validators TODO:
+# NAME cannot start with number
+# *_PORT - check for collisions
+
+server_cfg_template = '''
+[SERVER]
+{server_settings}
+
+{track_settings}
+
+{session_settings}
+
+{weather_settings}
+'''
+
+# stub validators
+def is_car_list():
+    pass
+
+def is_track():
+    pass
+
+def is_track_subversion():
+    pass
+
+def max_clients():
+    pass
+
+def is_tyre_list():
+    pass
+
+
+server_settings = OrderedDict([
+    ('NAME', {
+        'default': 'acdsc default',
+        'description': 'name of the server',
+        'validator': click.STRING
+    }),
+    ('CARS', {
+        'default': 'abarth500_s1;ferrari_458',
+        'description': 'models of the cars allowed in the server (as in '
+                       'content/cars -directory)',
+        'validator': is_car_list
+    }),
+    ('TRACK', {
+        'default': 'vallelunga',
+        'description': 'track on the server (as in content/tracks -directory)',
+        'validator': is_track
+    }),
+    ('CONFIG_TRACK', {
+        'default': 'extended_circuit',
+        'description': 'subversion of the track (as in content/tracks/TRACK/ '
+                       '-directory)',
+        'validator': is_track_subversion
+    }),
+    ('SUN_ANGLE', {
+        'default': '-8',
+        'description': 'angle of the position of the sun',
+        'validator': click.INT
+    }),
+    ('MAX_CLIENTS', {
+        'default': '15',
+        'description': 'max number of clients (must be <= track\'s number of '
+                       'pits)',
+        'validator': max_clients
+    }),
+    ('RACE_OVER_TIME', {
+        'default': '20',
+        'description': 'time remaining in seconds to finish the race from the '
+                       'moment the first one passes on the finish line',
+        'validator': click.IntRange(1)
+    }),
+    ('ALLOWED_TYRES_OUT', {
+        'default': '-1',
+        'description': 'number of tyres allowed outside of track before '
+                       'penalty (-1 disabled)',
+        'validator': click.IntRange(-1, 4)
+    }),
+    ('UDP_PORT', {
+        'default': '9600',
+        'description': 'UDP port number',
+        'validator': click.IntRange(1024, 49151)
+    }),
+    ('TCP_PORT', {
+        'default': '9600',
+        'description': 'TCP port number',
+        'validator': click.IntRange(1024, 49151)
+    }),
+    ('HTTP_PORT', {
+        'default': '8081',
+        'description': 'Lobby port number (both UDP and TCP)',
+        'validator': click.IntRange(1024, 49151)
+    }),
+    ('PASSWORD', {
+        'default': 'something',
+        'description': 'server password',
+        'validator': click.STRING
+    }),
+    ('LOOP_MODE', {
+        'default': '1',
+        'description': 'the server restarts from the first track, to disable '
+                       'this set it to 0',
+        'validator': click.IntRange(0, 1)
+    }),
+    ('REGISTER_TO_LOBBY', {
+        'default': '1',
+        'description': 'this must not be touched',
+        'validator': click.IntRange(1, 1)
+    }),
+    ('PICKUP_MODE_ENABLED', {
+        'default': '1',
+        'description': 'if 0 the server start in booking mode (do not use it).'
+                       ' Warning: in pickup mode you have to list only a '
+                       'circuit under TRACK and you need to list a least one '
+                       'car in the entry_list',
+        'validator': click.IntRange(0, 1)
+    }),
+    ('SLEEP_TIME', {
+        'default': '1',
+        'description': 'this must not be touched',
+        'validator': click.IntRange(1, 1)
+    }),
+    ('VOTING_QUORUM', {
+        'default': '75',
+        'description': 'percentage of vote that is required for the SESSION '
+                       'vote to pass',
+        'validator': click.IntRange(1, 100)
+    }),
+    ('VOTE_DURATION', {
+        'default': '20',
+        'description': 'time in seconds for the vote duration',
+        'validator': click.IntRange(1)
+    }),
+    ('BLACKLIST_MODE', {
+        'default': '0',
+        'description': 'ban player -> 0 = normal kick, rejoin possible, '
+                       '1 = until server restart, 2 kick  player and add him '
+                       'to blacklist',
+        'validator': click.IntRange(0, 2)
+    }),
+    ('TC_ALLOWED', {
+        'default': '1',
+        'description': '0 -> no car can use TC, '
+                       '1 -> only car provided with TC can use it; '
+                       '2-> any car can use TC',
+        'validator': click.IntRange(0, 2)
+    }),
+    ('ABS_ALLOWED', {
+        'default': '1',
+        'description': '0 -> no car can use ABS, '
+                       '1 -> only car provided with ABS can use it; '
+                       '2-> any car can use ABS',
+        'validator': click.IntRange(0, 2)
+    }),
+    ('STABILITY_ALLOWED', {
+        'default': '0',
+        'description': 'Stability assist 0 -> OFF; 1 -> ON',
+        'validator': click.IntRange(0, 1)
+    }),
+    ('AUTOCLUTCH_ALLOWED', {
+        'default': '1',
+        'description': 'Autoclutch assist 0 -> OFF; 1 -> ON',
+        'validator': click.IntRange(0, 1)
+    }),
+    ('DAMAGE_MULTIPLIER', {
+        'default': '0',
+        'description': 'Damage from 0 (no damage) to 100 (full damage)',
+        'validator': click.IntRange(0, 100)
+    }),
+    ('FUEL_RATE', {
+        'default': '100',
+        'description': 'Fuel usage from 0 (no fuel usage) to XXX (100 is the '
+                       'realistic one)',
+        'validator': click.IntRange(0)
+    }),
+    ('TYRE_WEAR_RATE', {
+        'default': '100',
+        'description': 'Tyre wear from 0 (no tyre wear) to XXX (100 is the '
+                       'realistic one)',
+        'validator': click.IntRange(0)
+    }),
+    ('CLIENT_SEND_INTERVAL_HZ', {
+        'default': '15',
+        'description': 'refresh rate of packet sending by the server. '
+                       '10Hz = ~100ms. Higher number = higher MP quality = '
+                       'higher bandwidth resources needed. Really high values '
+                       'can create connection issues',
+        'validator': click.IntRange(1)
+    }),
+    ('TYRE_BLANKETS_ALLOWED', {
+        'default': '1',
+        'description': 'at the start of the session or after the pitstop the '
+                       'tyre will have the the optimal temperature',
+        'validator': click.IntRange(0, 1)
+    }),
+    ('ADMIN_PASSWORD', {
+        'default': 'kunos',
+        'description': 'it\'s the password needed to be recognized as server '
+                       'administrator: you can join the server using it to be '
+                       'recognized automatically. Write on the game\'s chat '
+                       '/help to see the command list',
+        'validator': click.STRING
+    }),
+    ('QUALIFY_MAX_WAIT_PERC', {
+        'default': '120',
+        'description': 'this is the factor to calculate the remaining time in '
+                       'a qualify session after the session is ended: '
+                       '120 means that 120% of the session fastest lap '
+                       'remains to end the current lap.',
+        'validator': click.IntRange(1)
+    }),
+    ('WELCOME_MESSAGE', {
+        'default': '',
+        'description': 'path of a file who contains the server welome message',
+        'validator': click.Path(exists=True, dir_okay=False, file_okay=True)
+    }),
+    ('START_RULE', {
+        'default': '0',
+        'description': 'false start penalty: 0 is car locked until start; '
+                       '1 is teleport   ; 2 is drivethru (if race has 3 or '
+                       'less laps then the Teleport penalty is enabled)',
+        'validator': click.IntRange(0, 2)
+    }),
+    ('NUM_THREADS', {
+        'default': '4',
+        'description': 'number of server threads',
+        'validator': click.IntRange(1)
+    }),
+    ('FORCE_VIRTUAL_MIRROR', {
+        'default': '1',
+        'description': '1 virtual mirror will be enabled for every client, '
+                       '0 for mirror as optional',
+        'validator': click.IntRange(0, 1)
+    }),
+    ('LEGAL_TYRES', {
+        'default': 'V;E;HR;ST',
+        'description': 'list of the tyre\'s shortnames that will be allowed '
+                       'in the server.',
+        'validator': is_tyre_list
+    }),
+    ('MAX_BALLAST_KG', {
+        'default': '50',
+        'description': 'the max total of ballast that can be added through '
+                       'the admin command',
+        'validator': click.IntRange(0)
+    }),
+    ('UDP_PLUGIN_LOCAL_PORT', {
+        'default': '0',
+        'description': 'see plugin example',
+        'validator': click.IntRange(0, 49151)
+    }),
+    ('UDP_PLUGIN_ADDRESS', {
+        'default': '',
+        'description': 'see plugin example',
+        'validator': click.STRING
+    }),
+    ('AUTH_PLUGIN_ADDRESS', {
+        'default': '',
+        'description': 'see plugin example',
+        'validator': click.STRING
+    }),
+    ('RACE_GAS_PENALTY_DISABLED', {
+        'default': '0',
+        'description': '0 any cut will be penalized with the gas cut message; '
+                       '1 no penalization will be forced, but cuts will be '
+                       'saved in the race result json.',
+        'validator': click.IntRange(0, 1)
+    }),
+    ('RESULT_SCREEN_TIME', {
+        'default': '10',
+        'description': 'seconds of result screen between racing sessions.',
+        'validator': click.IntRange(1)
+    }),
+    ('RACE_EXTRA_LAP', {
+        'default': '0',
+        'description': 'if it\'s a timed race, with 1 the race will not end '
+                       'when the time is over and the leader crosses the '
+                       'line, but the latter will be forced to drive another '
+                       'extra lap.',
+        'validator': click.IntRange(0, 1)
+    }),
+    ('LOCKED_ENTRY_LIST', {
+        'default': '0',
+        'description': 'same as in booking mode, only players already '
+                       'included in the entry list can join the server '
+                       '(password not needed).',
+        'validator': click.IntRange(0, 1)
+    }),
+    ('RACE_PIT_WINDOW_START', {
+        'default': '25',
+        'description': 'Pit window open at lap/minute (depends on the race '
+                       'mode)',
+        'validator': click.IntRange(1)
+    }),
+    ('RACE_PIT_WINDOW_END', {
+        'default': '35',
+        'description': 'Pit window closes at lap/minute (depends on the race '
+                       'mode)',
+        'validator': click.IntRange(1)
+    }),
+    ('REVERSED_GRID_RACE_POSITIONS', {
+        'default': '8',
+        'description': '0 = no additional race, 1toX = only those position '
+                       'will be reversed for the next race, -1 = all the '
+                       'position will be reversed (Retired players will be '
+                       'on the last positions)',
+        'validator': click.IntRange(0)
+    }),
+    ('TIME_OF_DAY_MULT', {
+        'default': '1',
+        'description': 'multiplier for the time of day',
+        'validator': click.IntRange(1)
+    })
+])
+
+entry_list_template = '''
+[CAR_{num}]
+DRIVERNAME=
+TEAM=
+MODEL={model}
+GUID=
+SPECTATOR_MODE=0
+BALLAST=0
+'''
+
+
+## Utils
+
+
+class multidict(OrderedDict):
+    ''' Ordered multidict that mangles keys with unique id's '''
+
+    _unique = 0
+
+    def __setitem__(self, key, val):
+        unique_key = key
+        if key in self and isinstance(val, dict):
+            self._unique += 1
+            unique_key += str(self._unique)
+            val['__multidict_key__'] = key
+        OrderedDict.__setitem__(self, unique_key, val)
+
+
+class ACParser(cp.ConfigParser):
+    ''' Holy clusterfuck to make Italian idea of valid INI format to work '''
+
+    optionxform = str
+
+    def __init__(self, *args, **kwargs):
+        kwargs['dict_type'] = multidict
+        cp.ConfigParser.__init__(self, *args, **kwargs)
+
+    def _read(self, fp, fpname):
+        # copypasta from ConfigParser.py, just modify the section part to
+        # append duplicates
+        cursect = None                        # None, or a dictionary
+        optname = None
+        lineno = 0
+        e = None                              # None, or an exception
+        while True:
+            line = fp.readline()
+            if not line:
+                break
+            lineno = lineno + 1
+            # comment or blank line?
+            if line.strip() == '' or line[0] in '#;':
+                continue
+            if line.split(None, 1)[0].lower() == 'rem' and line[0] in "rR":
+                # no leading whitespace
+                continue
+            # continuation line?
+            if line[0].isspace() and cursect is not None and optname:
+                value = line.strip()
+                if value:
+                    cursect[optname].append(value)
+            # a section header or option header?
+            else:
+                # is it a section header?
+                mo = self.SECTCRE.match(line)
+                if mo:
+                    sectname = mo.group('header')
+                    # NOTE: always recreate new section
+                    # if sectname in self._sections:
+                        # cursect = self._sections[sectname]
+                    # elif sectname == cp.DEFAULTSECT:
+                    if sectname == cp.DEFAULTSECT:
+                        cursect = self._defaults
+                    else:
+                        cursect = self._dict()
+                        cursect['__name__'] = sectname
+                        self._sections[sectname] = cursect
+                    # So sections can't start with a continuation line
+                    optname = None
+                # no section header in the file?
+                elif cursect is None:
+                    raise MissingSectionHeaderError(fpname, lineno, line)
+                # an option line?
+                else:
+                    mo = self._optcre.match(line)
+                    if mo:
+                        optname, vi, optval = mo.group('option', 'vi', 'value')
+                        optname = self.optionxform(optname.rstrip())
+                        # This check is fine because the OPTCRE cannot
+                        # match if it would set optval to None
+                        if optval is not None:
+                            if vi in ('=', ':') and ';' in optval:
+                                # ';' is a comment delimiter only if it follows
+                                # a spacing character
+                                pos = optval.find(';')
+                                if pos != -1 and optval[pos-1].isspace():
+                                    optval = optval[:pos]
+                            optval = optval.strip()
+                            # allow empty values
+                            if optval == '""':
+                                optval = ''
+                            cursect[optname] = [optval]
+                        else:
+                            # valueless option handling
+                            cursect[optname] = optval
+                    else:
+                        # a non-fatal parsing error occurred.  set up the
+                        # exception but keep going. the exception will be
+                        # raised at the end of the file and will contain a
+                        # list of all bogus lines
+                        if not e:
+                            e = ParsingError(fpname)
+                        e.append(lineno, repr(line))
+        # if any parsing errors occurred, raise an exception
+        if e:
+            raise e
+
+        # join the multi-line values collected while reading
+        all_sections = [self._defaults]
+        all_sections.extend(self._sections.values())
+        for options in all_sections:
+            for name, val in options.items():
+                if isinstance(val, list):
+                    options[name] = '\n'.join(val)
+
+    def write(self, fp):
+        for section in self._sections:
+            multidict_key = self._sections[section].get('__multidict_key__')
+            if multidict_key is not None:
+                section = multidict_key
+            fp.write('[{}]\n'.format(section))
+            for (key, value) in self._sections[section].items():
+                if key in ('__name__', '__multidict_key__'):
+                    continue
+                if (value is not None) or (self._optcre == self.OPTCRE):
+                    key = '='.join((key, str(value).replace('\n', '\n\t')))
+                fp.write('{}\n'.format(key))
+            fp.write('\n')
+
+
+def convert_key(key):
+    return key.upper().replace('-', '_')
+
+
+def convert_ini_key(ini_key):
+    return ini_key.lower().replace('_', '-')
+
+
+def make_server_config_parser(config_file):
+    parser = ACParser()
+    parser.read(config_file)
+    return parser
+
+
+def dynamic_options(options):
+    from click.decorators import option
+    def decorator(f):
+        for key, value in reversed(options.items()):
+            f = option('--{}'.format(convert_ini_key(key)),
+                       type=value['validator'],
+                       help=value['description'])(f)
+        return f
+    return decorator
+
+
+class SteamPath(click.Path):
+
+    def convert(self, value, param, ctx):
+        return super(SteamPath, self).convert(
+            os.path.join(ctx.params['steam_dir'], value), param, ctx)
+
+
+
+## Click group
+
+@click.group(context_settings={'help_option_names': ['-h', '--help']})
+@click.option('--steam-dir',
+              default=os.path.expanduser('~/Steam'),
+              show_default=True,
+              type=click.Path(file_okay=False, dir_okay=True, exists=True),
+              help='Path to Steam installation')
+@click.option('--server-config-path',
+              default='steamapps/common/Assetto Corsa Dedicated '
+                      'Server/cfg/server_cfg.ini',
+              show_default=True,
+              type=SteamPath(file_okay=True, dir_okay=False, exists=True),
+              help='Relative path to --steam-dir containing server '
+                   'configuration .ini-file')
+@click.pass_context
+def cli(ctx, steam_dir, server_config_path):
+    # TODO: check for steam installation, acds installation etc
+    config_file = os.path.join(steam_dir, server_config_path)
+    parser = make_server_config_parser(config_file)
+    ctx.obj = {
+        'parser': parser,
+        'server-config-file': config_file
+    }
+
+
+## Server configuration
+
+@cli.group()
+def server():
+    pass
+
+
+## print out current server settings
+# acdsc server show
+@server.command('current')
+@click.pass_obj
+def server_list(config):
+    click.secho('Current settings:', fg='green')
+    for key, value in config['parser'].items('SERVER'):
+        click.echo('{:<30}: {}'.format(key, value))
+
+
+## set setting values
+# acdsc server set [--with-defaults] --name "my ac server #001" --time-of-day-mult "2" ...
+@server.command('set')
+@click.option('-w', '--with-defaults',
+              is_flag=True,
+              default=False,
+              show_default=True,
+              help='Write ALL default values as well as given values')
+@dynamic_options(server_settings)
+@click.pass_context
+def server_set(ctx, with_defaults, **kwargs):
+    def to_ini(kv):
+        key, value = kv
+        if value is not None:
+            return (convert_key(key), value.encode('utf-8'))
+        return (convert_key(key), value)
+
+    parser = ctx.obj['parser']
+    config_file = ctx.obj['server-config-file']
+    # Set configuration values when given
+    if any(kwargs.values()):
+        for key, value in map(to_ini, kwargs.items()):
+            if value is None and not parser.has_option('SERVER', key):
+                value = server_settings.get('key', {}).get('default', '')
+                click.secho('Setting missing {} to default value {}'.format(
+                            key, value))
+            else:
+                old_value = parser.get('SERVER', key)
+                click.secho(
+                    'Setting {} from {} => {}'.format(key, old_value, value),
+                    fg='yellow')
+            parser.set('SERVER', key, value)
+        if with_defaults:
+            for key, value in server_settings.items():
+                click.secho('Setting non-given {} to default value {}'.format(
+                            key, value['default']))
+                parser.set('SERVER', key, value['default'])
+        click.secho('Writing new configuration to {}'.format(config_file))
+        # TODO: write actual file
+        parser.write(open('new.cfg', 'w'))
+        # parser.write(open(config_file, 'w'))
+    ctx.invoke(server_list)
+
+
+## print out current sessions
+# acdsc server session-list
+@server.command('session-list')
+@click.pass_obj
+def session_list(config):
+    valid_sessions = ('PRACTICE', 'QUALIFY', 'RACE')
+    parser = config['parser']
+    for section in parser.sections():
+        options = dict(parser.items(section))
+        if '__multidict_key__' in options:
+            session = options['__multidict_key__']
+            del options['__multidict_key__']
+        else:
+            session = section
+        if session in valid_sessions:
+            click.secho('[{}]'.format(session), fg='green')
+            for key, value in options.items():
+                click.echo('{:<20}: {}'.format(key, value))
+            click.echo()
+
+## add a session
+# acdsc server add-session
+## print out current weathers
+# acdsc server weather-list
+## add a weather
+# acdsc server add-weather
+
+
+## Entry list
+
+## set driver details in entry list
+# acdsc set-entry --car 0 --drivername "foobar" --ballast 50 ...
+@cli.command('set-entry')
+def set_entry():
+    pass
+
+
+## generate anonymous entries to entry list
+# acdsc gen-entries car1 car2 car3
+@cli.command('gen-entries')
+def gen_entries():
+    pass
+
+
+## Server state
+
+## run AC Dedicated Server
+# acdsc start -f|-b
+@cli.command('start')
+@click.option('--autoupdate',
+              is_flag=True,
+              default=False,
+              show_default=True,
+              help='Automatically update AC Dedicated Server before launching')
+def start_server(autoupdate):
+    pass
+
+
+## check status (and logs [TODO])
+# acdsc status
+@cli.command('status')
+def server_status():
+    pass
+
+
+## stop AC Dedicated Server
+# acdsc stop
+@cli.command('stop')
+def stop_server():
+    pass
+
+
+## update AC Dedicated Server (you can also use --autoupdate -flag with start)
+# acdsc update
+@cli.command('update')
+def update_server():
+    pass
+
+
+# @click.command()
+# @click.option('-c', '--config-file',
+              # default=os.path.join(os.getcwd(), 'cfg', 'entry_list.ini'),
+              # show_default=True,
+              # type=click.Path(file_okay=True, dir_okay=False, exists=True))
+# @click.option('-n', '--num-cars', default=32, show_default=True)
+# @click.argument('model', type=str, nargs=-1)
+# def gen_entry_list(model, num_cars, config_file):
+    # print('Writing {} for {} cars from pool of: {}'.format(
+        # config_file, num_cars, ', '.join(model)))
+    # models = cycle(model)
+    # entry_list = ''
+    # for num in range(0, num_cars):
+        # entry_list += entry_list_template.format(
+            # num=num,
+            # model=next(models))
+    # print(entry_list)
+
+
+if __name__ == '__main__':
+    cli()
