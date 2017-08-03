@@ -417,135 +417,15 @@ BALLAST=0
 
 ## Utils
 
-
-class multidict(OrderedDict):
-    ''' Ordered multidict that mangles keys with unique id's '''
-
-    _unique = 0
-
-    def __setitem__(self, key, val):
-        unique_key = key
-        if key in self and isinstance(val, dict):
-            self._unique += 1
-            unique_key += str(self._unique)
-            val['__multidict_key__'] = key
-        OrderedDict.__setitem__(self, unique_key, val)
-        return unique_key
-
-
 class ACParser(cp.ConfigParser):
-    ''' Holy clusterfuck to make Italian idea of valid INI format to work '''
 
     optionxform = str
 
-    def __init__(self, *args, **kwargs):
-        kwargs['dict_type'] = multidict
-        cp.ConfigParser.__init__(self, *args, **kwargs)
-
-    def add_section(self, section):
-        if section.lower() == 'default':
-            raise ValueError, 'Invalid section name {}'.format(section)
-        # do not raise DuplicateSectionError, just let multidict handle it's
-        # shit
-        self._sections[section] = self._dict()
-        sections = filter(lambda s: s.startswith(section), self._sections)
-        return sorted(sections)[-1]
-
-    def _read(self, fp, fpname):
-        # copypasta from ConfigParser.py, just modify the section part to
-        # append duplicates
-        cursect = None                        # None, or a dictionary
-        optname = None
-        lineno = 0
-        e = None                              # None, or an exception
-        while True:
-            line = fp.readline()
-            if not line:
-                break
-            lineno = lineno + 1
-            # comment or blank line?
-            if line.strip() == '' or line[0] in '#;':
-                continue
-            if line.split(None, 1)[0].lower() == 'rem' and line[0] in "rR":
-                # no leading whitespace
-                continue
-            # continuation line?
-            if line[0].isspace() and cursect is not None and optname:
-                value = line.strip()
-                if value:
-                    cursect[optname].append(value)
-            # a section header or option header?
-            else:
-                # is it a section header?
-                mo = self.SECTCRE.match(line)
-                if mo:
-                    sectname = mo.group('header')
-                    # NOTE: always recreate new section
-                    # if sectname in self._sections:
-                        # cursect = self._sections[sectname]
-                    # elif sectname == cp.DEFAULTSECT:
-                    if sectname == cp.DEFAULTSECT:
-                        cursect = self._defaults
-                    else:
-                        cursect = self._dict()
-                        cursect['__name__'] = sectname
-                        self._sections[sectname] = cursect
-                    # So sections can't start with a continuation line
-                    optname = None
-                # no section header in the file?
-                elif cursect is None:
-                    raise MissingSectionHeaderError(fpname, lineno, line)
-                # an option line?
-                else:
-                    mo = self._optcre.match(line)
-                    if mo:
-                        optname, vi, optval = mo.group('option', 'vi', 'value')
-                        optname = self.optionxform(optname.rstrip())
-                        # This check is fine because the OPTCRE cannot
-                        # match if it would set optval to None
-                        if optval is not None:
-                            if vi in ('=', ':') and ';' in optval:
-                                # ';' is a comment delimiter only if it follows
-                                # a spacing character
-                                pos = optval.find(';')
-                                if pos != -1 and optval[pos-1].isspace():
-                                    optval = optval[:pos]
-                            optval = optval.strip()
-                            # allow empty values
-                            if optval == '""':
-                                optval = ''
-                            cursect[optname] = [optval]
-                        else:
-                            # valueless option handling
-                            cursect[optname] = optval
-                    else:
-                        # a non-fatal parsing error occurred.  set up the
-                        # exception but keep going. the exception will be
-                        # raised at the end of the file and will contain a
-                        # list of all bogus lines
-                        if not e:
-                            e = ParsingError(fpname)
-                        e.append(lineno, repr(line))
-        # if any parsing errors occurred, raise an exception
-        if e:
-            raise e
-
-        # join the multi-line values collected while reading
-        all_sections = [self._defaults]
-        all_sections.extend(self._sections.values())
-        for options in all_sections:
-            for name, val in options.items():
-                if isinstance(val, list):
-                    options[name] = '\n'.join(val)
-
     def write(self, fp):
         for section in self._sections:
-            multidict_key = self._sections[section].get('__multidict_key__')
-            if multidict_key is not None:
-                section = multidict_key
             fp.write('[{}]\n'.format(section))
             for (key, value) in self._sections[section].items():
-                if key in ('__name__', '__multidict_key__'):
+                if key == '__name__':
                     continue
                 if (value is not None) or (self._optcre == self.OPTCRE):
                     key = '='.join((key, str(value).replace('\n', '\n\t')))
@@ -682,6 +562,13 @@ def server_set(ctx, with_defaults, **kwargs):
 
 ## print out current sessions
 # acdsc server session-list
+def echo_session(session, options):
+    click.secho('[{}]'.format(session), fg='green')
+    for key, value in options.items():
+        click.echo('{:<20}: {}'.format(key, value))
+    click.echo()
+
+
 @server.command('session-list')
 @click.pass_obj
 def session_list(config):
@@ -689,16 +576,12 @@ def session_list(config):
     parser = config['parser']
     for section in parser.sections():
         options = dict(parser.items(section))
-        if '__multidict_key__' in options:
-            session = options['__multidict_key__']
-            del options['__multidict_key__']
-        else:
-            session = section
-        if session in session_settings:
-            click.secho('[{}]'.format(session), fg='green')
-            for key, value in options.items():
-                click.echo('{:<20}: {}'.format(key, value))
-            click.echo()
+        if section in session_settings:
+            reversed_grid_race = int(parser.get(
+                    'SERVER', 'REVERSED_GRID_RACE_POSITIONS'))
+            if section == 'RACE' and reversed_grid_race != 0:
+                section += 'x2'
+            echo_session(section, options)
 
 ## add a session
 # acdsc server add-session
@@ -710,10 +593,24 @@ def add_session():
 # this dude is a distant relative of black adder ^_^
 def make_session_adder(session_type, options):
     @add_session.command(session_type)
+    @click.option('-f', '--force',
+                  is_flag=True,
+                  default=False,
+                  show_default=True,
+                  help='Remove previosly existing session')
     @dynamic_options(options)
     @click.pass_context
-    def session_adder(ctx, **kwargs):
+    def session_adder(ctx, force=False, **kwargs):
         parser = ctx.obj['parser']
+        if parser.has_section(session_type):
+            if not force:
+                click.secho(
+                    'ERROR: {} session already exists!'.format(session_type),
+                    fg='red')
+                echo_session(session_type, dict(parser.items(session_type)))
+                click.confirm('Do you wish to replace existing session?',
+                              abort=True)
+            ctx.invoke(del_session, session_type)
         click.secho('Adding {} session:'.format(session_type), fg='yellow')
         section_key = parser.add_section(session_type)
         for key, value in map(to_ini, kwargs.items()):
@@ -728,6 +625,7 @@ def make_session_adder(session_type, options):
     return session_adder
 
 
+# dynamically create acdsc server add-session commands for session types
 for session_type, options in session_settings.items():
     defname = 'add_{}_session'.format(session_type)
     globals()[defname] = make_session_adder(session_type, options)
@@ -735,6 +633,18 @@ for session_type, options in session_settings.items():
 
 ## remove a session
 # acdsc server del-session
+@server.command('del-session')
+@click.argument('session-type',
+                type=click.Choice(session_settings.keys()))
+@click.pass_context
+def del_session(ctx, session_type):
+    parser = ctx.obj['parser']
+    if not parser.has_section(session_type):
+        ctx.fail('{} session does not exist!'.format(session_type))
+    parser.remove_section(session_type)
+    write_config_file(ctx.obj)
+
+
 ## print out current weathers
 # acdsc server weather-list
 ## add a weather
