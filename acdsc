@@ -1,14 +1,25 @@
-#!/usr/bin/python2.7
+#!/usr/bin/python3
 
-import ConfigParser as cp
+import configparser as cp
 import os
+import shutil
+import subprocess as sub
+import tarfile
+import tempfile
 
 from collections import OrderedDict
 from functools import update_wrapper, partial
 from itertools import cycle
 from operator import contains, itemgetter
+from urllib.request import urlopen
 
 import click
+
+
+# NOTE: Assetto Corsa Dedicated Server requires non-anonymous user
+steam_username = 'acdscontrol'
+steam_password = 'Kekkonen69'
+steam_appid = 302550
 
 
 # Validators TODO:
@@ -537,29 +548,121 @@ def write_config_file(config):
     # parser.write(open(config_file, 'w'))
 
 
+## External dependencies
+def install_steamcmd(path):
+    steamcmd_url = \
+        'https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz'
+    click.secho(
+        'ERROR: steamcmd not found from {}!'.format(path),
+        fg='red')
+    click.confirm(
+        'Do you wish to attempt installation from {}?'.format(steamcmd_url),
+        abort=True)
+    if os.path.exists(path):
+        shutil.rmtree(path)
+    os.makedirs(path)
+    click.echo('..downloading {}'.format(steamcmd_url))
+    response = urlopen(steamcmd_url)
+    temp_file = tempfile.NamedTemporaryFile(delete=False)
+    with temp_file as fh:
+        fh.write(response.read())
+    click.echo('..extracting to {}'.format(path))
+    tar = tarfile.open(temp_file.name)
+    tar.extractall(path)
+    tar.close()
+    os.unlink(temp_file.name)
+    click.secho('SteamCMD succesfully installed!', fg='green')
+
+
+def assert_working_steamcmd(steamcmd):
+    cp = sub.run('{} +quit'.format(steamcmd), shell=True)
+    cp.check_returncode()
+
+
+def install_steam():
+    steam_url = \
+        'http://repo.steampowered.com/steam/archive/precise/steam_latest.tar.gz'
+    click.secho('ERROR: steam not found!', fg='red')
+    click.confirm(
+        'Do you wish to attempt installation from {}?'.format(steam_url),
+        abort=True)
+    click.echo('..downloading {}'.format(steam_url))
+    response = urlopen(steam_url)
+    temp_dir = tempfile.TemporaryDirectory()
+    steam_dir = os.path.join(temp_dir.name, 'steam')
+    temp_file = tempfile.NamedTemporaryFile(delete=False)
+    with temp_file as fh:
+        fh.write(response.read())
+    click.echo('..extracting to {}'.format(steam_dir))
+    tar = tarfile.open(temp_file.name)
+    tar.extractall(temp_dir.name)
+    tar.close()
+    os.unlink(temp_file.name)
+    click.echo('..running sudo make install')
+    sub.call('sudo make install', cwd=steam_dir, shell=True)
+    temp_dir.cleanup()
+    click.secho('Steam succesfully installed!', fg='green')
+
+
+def update_acds(steamcmd):
+    click.secho('Updating Assetto Corsa Dedicated Server', fg='green')
+    cmd = ('{steamcmd} +login {username} {password} '
+           '+@sSteamCmdForcePlatformType windows +app_update {appid} '
+           '+quit').format(steamcmd=steamcmd,
+                           username=steam_username,
+                           password=steam_password,
+                           appid=steam_appid)
+    sub.call(cmd, shell=True)
+
+
 ## Click group
 
 @click.group(context_settings={'help_option_names': ['-h', '--help']})
 @click.option('--steam-path',
               default=os.path.expanduser('~/Steam'),
               show_default=True,
-              type=click.Path(file_okay=False, dir_okay=True, exists=True),
+              type=click.Path(file_okay=False, dir_okay=True, exists=False),
               help='Path to Steam installation')
 @click.option('--server-config-path',
               default='steamapps/common/Assetto Corsa Dedicated '
                       'Server/cfg/server_cfg.ini',
               show_default=True,
-              type=SteamPath(file_okay=True, dir_okay=False, exists=True),
+              type=SteamPath(file_okay=True, dir_okay=False, exists=False),
               help='Relative path to --steam-path containing server '
                    'configuration .ini-file')
+@click.option('--steamcmd-path',
+              default=os.path.expanduser('~/steamcmd'),
+              show_default=True,
+              type=click.Path(file_okay=False, dir_okay=True, exists=False),
+              help='Path to steamcmd installation (will be downloaded '
+                   'automatically if it does not exist)')
 @click.pass_context
-def cli(ctx, steam_path, server_config_path):
-    # TODO: check for steam installation, acds installation etc
+def cli(ctx, steam_path, server_config_path, steamcmd_path):
+    # TODO: Steam requires make, gpg, ca-certificates and 32bit libgcc1
+    # Steam
+    cp = sub.run('command -v steam', shell=True)
+    if cp.returncode != os.EX_OK:
+        install_steam()
+
+    # Steamcmd
+    steamcmd = os.path.join(steamcmd_path, 'steamcmd.sh')
+    if not os.path.exists(steamcmd_path) or not os.path.exists(steamcmd):
+        install_steamcmd(steamcmd_path)
+    assert_working_steamcmd(steamcmd)
+
+    # Assetto Corsa Dedicated Server
+    steamapps = os.path.join(steam_path, 'steamapps')
+    if (not os.path.exists(steam_path) or
+            not os.path.exists(steamapps) or
+            not os.path.exists(server_config_path)):
+        update_acds(steamcmd)
+
     config_file = os.path.join(steam_path, server_config_path)
     parser = make_server_config_parser(config_file)
     ctx.obj = {
         'parser': parser,
-        'server-config-file': config_file
+        'server-config-file': config_file,
+        'steamcmd': steamcmd
     }
 
 
