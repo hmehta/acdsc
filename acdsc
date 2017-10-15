@@ -575,7 +575,10 @@ def install_steamcmd(path):
 
 
 def assert_working_steamcmd(steamcmd):
-    cp = sub.run('{} +quit'.format(steamcmd), shell=True)
+    cp = sub.run('{} +quit'.format(steamcmd),
+                 stdout=sub.PIPE,
+                 stderr=sub.PIPE,
+                 shell=True)
     cp.check_returncode()
 
 
@@ -907,8 +910,9 @@ def stop_server():
 ## update AC Dedicated Server (you can also use --autoupdate -flag with start)
 # acdsc update
 @cli.command('update')
-def update_server():
-    pass
+@click.pass_obj
+def update_server(config):
+    update_acds(config['steamcmd'])
 
 
 # @click.command()
