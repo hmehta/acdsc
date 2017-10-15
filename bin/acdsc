@@ -30,6 +30,12 @@ steam_appid = 302550
 # *_PORT - check for collisions
 
 # stub validators
+def is_car():
+    pass
+
+def is_car_skin():
+    pass
+
 def is_car_list():
     pass
 
@@ -455,15 +461,43 @@ weather_settings = OrderedDict([
         })
 ])
 
-entry_list_template = '''
-[CAR_{num}]
-DRIVERNAME=
-TEAM=
-MODEL={model}
-GUID=
-SPECTATOR_MODE=0
-BALLAST=0
-'''
+entry_list_settings = OrderedDict([
+    ('DRIVERNAME', {
+        'default': '',
+        'description': 'Driver name',
+        'validator': click.STRING
+    }),
+    ('GUID', {
+        'default': '',
+        'description': 'Steam GUID',
+        'validator': click.STRING  # TODO: GUID validator (no duplicates)
+    }),
+    ('MODEL', {
+        'default': 'bmw_m3_e30',
+        'description': 'Car model',
+        'validator': is_car
+    }),
+    ('TEAM', {
+        'default': '',
+        'description': 'Team name',
+        'validator': click.STRING
+    }),
+    ('BALLAST', {
+        'default': 0,
+        'description': 'Additional weight (ballast) in kg',
+        'validator': click.INT
+    }),
+    ('SKIN', {
+        'default': '',
+        'description': 'Car skin',
+        'validator': is_car_skin
+    }),
+    ('SPECTATOR_MODE', {
+        'default': 0,
+        'description': 'Should always be 0',
+        'validator': click.IntRange(0, 0)
+    })
+])
 
 
 ## Utils
@@ -546,6 +580,16 @@ def all_none(iterable):
     return all(map(is_none, iterable))
 
 
+def numeric_sort(a):
+    return int(a.split('_')[-1])
+
+
+def get_next_section(section, sections):
+    return '{}_{}'.format(
+        section,
+        int(sorted(sections, key=numeric_sort)[-1].split('_')[-1]) + 1)
+
+
 class SteamPath(click.Path):
 
     def convert(self, value, param, ctx):
@@ -553,13 +597,56 @@ class SteamPath(click.Path):
             os.path.join(ctx.params['steam_path'], value), param, ctx)
 
 
-def write_config_file(config):
-    parser = config['parser']
-    config_file = config['server-config-file']
+def write_config_file(parser, config_file):
     click.secho('Writing new configuration to {}'.format(config_file))
     # TODO: write actual file
     parser.write(open('new.cfg', 'w'))
     # parser.write(open(config_file, 'w'))
+
+
+def read_sections(parser, prefix):
+    def startswith_prefix(value):
+        return value.startswith('{}_'.format(prefix))
+
+    return sorted(filter(startswith_prefix, parser.sections()),
+                  key=numeric_sort)
+
+
+def del_section(ctx, parser, config_file, prefix, idx):
+    sections = read_sections(parser, prefix)
+    section = '{}_{}'.format(prefix, idx)
+    if section not in sections:
+        ctx.fail('{} does not exist!'.format(section))
+    parser.remove_section(section)
+    write_config_file(parser, config_file)
+
+
+def list_sections(parser, prefix):
+    sections = read_sections(parser, prefix)
+    for section in sections:
+        echo_section(section, dict(parser.items(section)))
+
+
+def add_section(parser, config_file, name, prefix, settings, **kwargs):
+    if all_none(kwargs.values()):
+        click.secho('WARNING: no {} options given!'.format(name), fg='yellow')
+        click.confirm('Do you really want to add default {}?'.format(name),
+                      abort=True)
+    sections = read_sections(parser, prefix)
+    next_section = get_next_section(prefix, sections)
+    parser.add_section(next_section)
+    for key, value in map(to_ini, kwargs.items()):
+        if value is None:
+            value = settings[key]['default']
+            click.secho(
+                'Setting non-given {} to default value {}'.format(key, value),
+                fg='yellow')
+        else:
+            click.echo('Setting {} to {}'.format(key, value))
+        parser.set(next_section, key, value)
+    click.secho('Added {}'.format(name), fg='green')
+    echo_section(next_section, dict(parser.items(next_section)))
+    write_config_file(parser, config_file)
 
 
 ## External dependencies
@@ -661,7 +748,7 @@ def update_acds(steamcmd):
 def cli(ctx, steam_path, server_path, steamcmd_path, pidfile):
     # TODO: Steam requires make, gpg, ca-certificates and 32bit libgcc1
     # Steam
-    cp = sub.run('command -v steam', shell=True)
+    cp = sub.run('command -v steam', stdout=sub.PIPE, stderr=sub.PIPE, shell=True)
     if cp.returncode != os.EX_OK:
         install_steam()
 
@@ -679,11 +766,16 @@ def cli(ctx, steam_path, server_path, steamcmd_path, pidfile):
         update_acds(steamcmd)
 
     config_file = os.path.join(steam_path, server_path, 'cfg', 'server_cfg.ini')
+    entry_list = os.path.join(
+        steam_path, server_path, 'cfg', 'entry_list.ini')
     parser = make_server_config_parser(config_file)
+    entry_parser = make_server_config_parser(entry_list)
     ctx.obj = {
         'parser': parser,
+        'entry-parser': entry_parser,
         'pidfile': pidfile,
-        'server-config-file': config_file,
+        'config-file': config_file,
+        'entry-list': entry_list,
         'server-path': server_path,
         'steamcmd': steamcmd
     }
@@ -736,7 +828,7 @@ def server_set(ctx, with_defaults, **kwargs):
                 click.secho('Setting non-given {} to default value {}'.format(
                             key, value['default']))
                 parser.set('SERVER', key, value['default'])
-        write_config_file(ctx.obj)
+        write_config_file(ctx.obj['parser'], ctx.obj['config-file'])
     ctx.invoke(server_list)
 
 
@@ -798,7 +890,7 @@ def make_session_adder(session_type, options):
             else:
                 click.secho('Setting {} to {}'.format(key, value))
             parser.set(section_key, key, value)
-        write_config_file(ctx.obj)
+        write_config_file(ctx.obj['parser'], ctx.obj['config-file'])
     return session_adder
 
 
@@ -819,71 +911,86 @@ def del_session(ctx, session_type):
     if not parser.has_section(session_type):
         ctx.fail('{} session does not exist!'.format(session_type))
     parser.remove_section(session_type)
-    write_config_file(ctx.obj)
+    write_config_file(ctx.obj['parser'], ctx.obj['config-file'])
+
+
+## Weather
+@cli.group('weather')
+def weather():
+    pass
 
 
 ## print out current weathers
-def read_weathers(parser):
-    return sorted(
-        filter(lambda s: s.startswith('WEATHER_'), parser.sections()))
-
-
-# acdsc server weather-list
-@server.command('weather-list')
+# acdsc weather list
+@weather.command('list')
 @click.pass_obj
 def weather_list(config):
     parser = config['parser']
-    weathers = read_weathers(parser)
-    for weather in weathers:
-        echo_section(weather, dict(parser.items(weather)))
+    list_sections(parser, 'WEATHER')
 
 
 ## add a weather
-# acdsc server add-weather
-@server.command('add-weather')
+# acdsc weather add
+@weather.command('add')
 @dynamic_options(weather_settings)
 @click.pass_obj
 def add_weather(config, **kwargs):
-    if all_none(kwargs.values()):
-        click.secho('WARNING: no weather options given!', fg='yellow')
-        click.confirm('Do you really want to add default weather?', abort=True)
     parser = config['parser']
-    weathers = filter(lambda s: s.startswith('WEATHER_'),
-                      parser.sections())
-    # ":D"
-    next_weather = 'WEATHER_{}'.format(
-        int(sorted(weathers)[-1].split('_')[-1]) + 1)
-    parser.add_section(next_weather)
-    for key, value in map(to_ini, kwargs.items()):
-        if value is None:
-            value = weather_settings[key]['default']
-            click.secho(
-                'Setting non-given {} to default value {}'.format(key, value))
-        else:
-            click.secho('Setting {} to {}'.format(key, value))
-        parser.set(next_weather, key, value)
-    click.secho('Added weather', fg='green')
-    echo_section(next_weather, dict(parser.items(next_weather)))
-    write_config_file(config)
+    config_file = config['config-file']
+    add_section(
+        parser, config_file, 'weather', 'WEATHER', weather_settings, **kwargs)
+
 
 ## remove a weather
-# acdsc server del-weather
-@server.command('del-weather')
+# acdsc weather del
+@weather.command('del')
 @click.argument('weather-id',
-                type=click.INT,
+                type=click.IntRange(0),
                 required=True)
 @click.pass_context
 def del_weather(ctx, weather_id):
-    parser = ctx.obj['parser']
-    weathers = read_weathers(parser)
-    weather = 'WEATHER_{}'.format(weather_id)
-    if weather not in weathers:
-        ctx.fail('{} does not exist!'.format(weather))
-    parser.remove_section(weather)
-    write_config_file(ctx.obj)
+    del_section(
+        ctx, ctx.obj['parser'], ctx.obj['config-file'], 'WEATHER', weather_id)
 
 
 ## Entry list
+@cli.group()
+def entries():
+    pass
+
+
+## list current entries
+# acdsc entries list
+@entries.command('list')
+@click.pass_obj
+def list_entries(config):
+    parser = config['entry-parser']
+    list_sections(parser, 'CAR')
+
+
+## add new entry to current entry list
+# acdsc entries add
+@entries.command('add')
+@dynamic_options(entry_list_settings)
+@click.pass_context
+def add_entry(ctx, **kwargs):
+    # TODO: Compare number of entries to current track (also, compare current
+    # number of entries to track when changing from server-side settings)
+    parser = ctx.obj['entry-parser']
+    config_file = ctx.obj['entry-list']
+    add_section(
+        parser, config_file, 'entry', 'CAR', entry_list_settings, **kwargs)
+
+
+## remove existing entry from current entry list
+# acdsc entries del
+@entries.command('del')
+@click.argument('entry-id', type=click.IntRange(0), required=True)
+@click.pass_context
+def del_entry(ctx, entry_id):
+    del_section(
+        ctx, ctx.obj['entry-parser'], ctx.obj['entry-list'], 'CAR', entry_id)
+
 
 ## set driver details in entry list
 # acdsc set-entry --car 0 --drivername "foobar" --ballast 50 ...
