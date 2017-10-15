@@ -2,6 +2,8 @@
 
 A simple CLI tool for configuring and managing Assetto Corsa Dedicated Server
 
+NOTE: This is far from working version, WIP
+
 ## Example usage
 
 ```bash
