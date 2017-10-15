@@ -15,17 +15,6 @@ import click
 # NAME cannot start with number
 # *_PORT - check for collisions
 
-server_cfg_template = '''
-[SERVER]
-{server_settings}
-
-{track_settings}
-
-{session_settings}
-
-{weather_settings}
-'''
-
 # stub validators
 def is_car_list():
     pass
@@ -404,6 +393,54 @@ session_settings = OrderedDict([
             })]))
 ])
 
+# NOTE: content/weather is not populated for dedicated server, these must be
+# manually maintained :(
+weather_types = ('1_heavy_fog', '2_light_fog', '3_clear', '4_mid_clear',
+                 '5_light_clouds', '6_mid_clouds', '7_heavy_clouds')
+weather_settings = OrderedDict([
+    ('GRAPHICS', {
+        'default': '3_clear',
+        'description': 'weather type (as in content/weather -directory)',
+        'validator': click.Choice(weather_types)
+        }),
+    ('BASE_TEMPERATURE_AMBIENT', {
+        'default': '18',
+        'description': 'temperature of the ambient',
+        'validator': click.IntRange(-50, 60)
+        }),
+    ('VARIATION_AMBIENT', {
+        'default': '2',
+        'description': 'variation of the ambient temperature',
+        'validator': click.INT
+        }),
+    ('BASE_TEMPERATURE_ROAD', {
+        'default': '6',
+        'description': 'relative road temperature: this value will be added '
+                       'to the final ambient temp.',
+        'validator': click.INT
+        }),
+    ('VARIATION_ROAD', {
+        'default': '1',
+        'description': 'variation of the road temperature',
+        'validator': click.INT
+        }),
+    ('WIND_BASE_SPEED_MIN', {
+        'default': '3',
+        'description': 'min wind speed of the session',
+        'validator': click.INT
+        }),
+    ('WIND_BASE_SPEED_MAX', {
+        'default': '15',
+        'description': 'max wind speed of the session',
+        'validator': click.INT
+        }),
+    ('WIND_BASE_DIRECTION', {
+        'default': '30',
+        'description': 'base direction of the wind (0 = North, 90 = East, ...)',
+        'validator': click.IntRange(0, 360)
+        })
+])
+
 entry_list_template = '''
 [CAR_{num}]
 DRIVERNAME=
@@ -467,11 +504,18 @@ def dynamic_options(options):
     return decorator
 
 
+def all_none(iterable):
+    def is_none(item):
+        return item is None
+
+    return all(map(is_none, iterable))
+
+
 class SteamPath(click.Path):
 
     def convert(self, value, param, ctx):
         return super(SteamPath, self).convert(
-            os.path.join(ctx.params['steam_dir'], value), param, ctx)
+            os.path.join(ctx.params['steam_path'], value), param, ctx)
 
 
 def write_config_file(config):
@@ -486,7 +530,7 @@ def write_config_file(config):
 ## Click group
 
 @click.group(context_settings={'help_option_names': ['-h', '--help']})
-@click.option('--steam-dir',
+@click.option('--steam-path',
               default=os.path.expanduser('~/Steam'),
               show_default=True,
               type=click.Path(file_okay=False, dir_okay=True, exists=True),
@@ -496,12 +540,12 @@ def write_config_file(config):
                       'Server/cfg/server_cfg.ini',
               show_default=True,
               type=SteamPath(file_okay=True, dir_okay=False, exists=True),
-              help='Relative path to --steam-dir containing server '
+              help='Relative path to --steam-path containing server '
                    'configuration .ini-file')
 @click.pass_context
-def cli(ctx, steam_dir, server_config_path):
+def cli(ctx, steam_path, server_config_path):
     # TODO: check for steam installation, acds installation etc
-    config_file = os.path.join(steam_dir, server_config_path)
+    config_file = os.path.join(steam_path, server_config_path)
     parser = make_server_config_parser(config_file)
     ctx.obj = {
         'parser': parser,
@@ -539,7 +583,7 @@ def server_list(config):
 def server_set(ctx, with_defaults, **kwargs):
     parser = ctx.obj['parser']
     # Set configuration values when given
-    if any(kwargs.values()):
+    if not all_none(kwargs.values()):
         for key, value in map(to_ini, kwargs.items()):
             if value is None and not parser.has_option('SERVER', key):
                 value = server_settings.get('key', {}).get('default', '')
@@ -562,10 +606,13 @@ def server_set(ctx, with_defaults, **kwargs):
 
 ## print out current sessions
 # acdsc server session-list
-def echo_session(session, options):
-    click.secho('[{}]'.format(session), fg='green')
+def echo_section(section, options):
+    click.secho('[{}]'.format(section), fg='green')
+    # ??
+    # max_width = max(map(len, options.keys()))
+    max_width = 24
     for key, value in options.items():
-        click.echo('{:<20}: {}'.format(key, value))
+        click.echo('{:<{}}: {}'.format(key, max_width, value))
     click.echo()
 
 
@@ -581,7 +628,7 @@ def session_list(config):
                     'SERVER', 'REVERSED_GRID_RACE_POSITIONS'))
             if section == 'RACE' and reversed_grid_race != 0:
                 section += 'x2'
-            echo_session(section, options)
+            echo_section(section, options)
 
 ## add a session
 # acdsc server add-session
@@ -597,7 +644,7 @@ def make_session_adder(session_type, options):
                   is_flag=True,
                   default=False,
                   show_default=True,
-                  help='Remove previosly existing session')
+                  help='Remove existing session without prompting')
     @dynamic_options(options)
     @click.pass_context
     def session_adder(ctx, force=False, **kwargs):
@@ -607,7 +654,7 @@ def make_session_adder(session_type, options):
                 click.secho(
                     'ERROR: {} session already exists!'.format(session_type),
                     fg='red')
-                echo_session(session_type, dict(parser.items(session_type)))
+                echo_section(session_type, dict(parser.items(session_type)))
                 click.confirm('Do you wish to replace existing session?',
                               abort=True)
             ctx.invoke(del_session, session_type)
@@ -646,9 +693,64 @@ def del_session(ctx, session_type):
 
 
 ## print out current weathers
+def read_weathers(parser):
+    return sorted(
+        filter(lambda s: s.startswith('WEATHER_'), parser.sections()))
+
+
 # acdsc server weather-list
+@server.command('weather-list')
+@click.pass_obj
+def weather_list(config):
+    parser = config['parser']
+    weathers = read_weathers(parser)
+    for weather in weathers:
+        echo_section(weather, dict(parser.items(weather)))
+
+
 ## add a weather
 # acdsc server add-weather
+@server.command('add-weather')
+@dynamic_options(weather_settings)
+@click.pass_obj
+def add_weather(config, **kwargs):
+    if all_none(kwargs.values()):
+        click.secho('WARNING: no weather options given!', fg='yellow')
+        click.confirm('Do you really want to add default weather?', abort=True)
+    parser = config['parser']
+    weathers = filter(lambda s: s.startswith('WEATHER_'),
+                      parser.sections())
+    # ":D"
+    next_weather = 'WEATHER_{}'.format(
+        int(sorted(weathers)[-1].split('_')[-1]) + 1)
+    parser.add_section(next_weather)
+    for key, value in map(to_ini, kwargs.items()):
+        if value is None:
+            value = weather_settings[key]['default']
+            click.secho(
+                'Setting non-given {} to default value {}'.format(key, value))
+        else:
+            click.secho('Setting {} to {}'.format(key, value))
+        parser.set(next_weather, key, value)
+    click.secho('Added weather', fg='green')
+    echo_section(next_weather, dict(parser.items(next_weather)))
+    write_config_file(config)
+
+## remove a weather
+# acdsc server del-weather
+@server.command('del-weather')
+@click.argument('weather-id',
+                type=click.INT,
+                required=True)
+@click.pass_context
+def del_weather(ctx, weather_id):
+    parser = ctx.obj['parser']
+    weathers = read_weathers(parser)
+    weather = 'WEATHER_{}'.format(weather_id)
+    if weather not in weathers:
+        ctx.fail('{} does not exist!'.format(weather))
+    parser.remove_section(weather)
+    write_config_file(ctx.obj)
 
 
 ## Entry list
