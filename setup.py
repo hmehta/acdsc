@@ -4,7 +4,7 @@ import sys
 
 from setuptools import setup, find_packages
 
-install_requires = ['click']
+install_requires = ['click', 'psutil']
 scripts = ['bin/acdsc']
 package_dir = {'acdsc': 'acdsc'}
 packages = find_packages()
