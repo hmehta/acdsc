@@ -4,9 +4,9 @@ import ConfigParser as cp
 import os
 
 from collections import OrderedDict
-from functools import update_wrapper
+from functools import update_wrapper, partial
 from itertools import cycle
-from operator import itemgetter
+from operator import contains, itemgetter
 
 import click
 
@@ -478,6 +478,16 @@ def convert_ini_key(ini_key):
     return ini_key.lower().replace('_', '-')
 
 
+def echo_section(section, options):
+    click.secho('[{}]'.format(section), fg='green')
+    # ??
+    # max_width = max(map(len, options.keys()))
+    max_width = 24
+    for key, value in options.items():
+        click.echo('{:<{}}: {}'.format(key, max_width, value))
+    click.echo()
+
+
 def to_ini(kv):
     key, value = kv
     if value is not None:
@@ -605,30 +615,24 @@ def server_set(ctx, with_defaults, **kwargs):
 
 
 ## print out current sessions
+def read_sessions(parser):
+    valid_sessions = session_settings.keys()
+    return sorted(filter(
+        partial(contains, valid_sessions), parser.sections()))
+
+
 # acdsc server session-list
-def echo_section(section, options):
-    click.secho('[{}]'.format(section), fg='green')
-    # ??
-    # max_width = max(map(len, options.keys()))
-    max_width = 24
-    for key, value in options.items():
-        click.echo('{:<{}}: {}'.format(key, max_width, value))
-    click.echo()
-
-
 @server.command('session-list')
 @click.pass_obj
 def session_list(config):
-    valid_sessions = session_settings.keys()
     parser = config['parser']
-    for section in parser.sections():
-        options = dict(parser.items(section))
-        if section in session_settings:
-            reversed_grid_race = int(parser.get(
-                    'SERVER', 'REVERSED_GRID_RACE_POSITIONS'))
-            if section == 'RACE' and reversed_grid_race != 0:
-                section += 'x2'
-            echo_section(section, options)
+    for session in read_sessions(parser):
+        options = dict(parser.items(session))
+        reversed_grid_race = int(parser.get(
+                'SERVER', 'REVERSED_GRID_RACE_POSITIONS'))
+        if session == 'RACE' and reversed_grid_race != 0:
+            session += 'x2'
+        echo_section(session, options)
 
 ## add a session
 # acdsc server add-session
