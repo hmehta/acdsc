@@ -14,6 +14,9 @@ from operator import contains, itemgetter
 from urllib.request import urlopen
 
 import click
+import psutil
+
+from acdsc.daemon import Daemon
 
 
 # NOTE: Assetto Corsa Dedicated Server requires non-anonymous user
@@ -465,6 +468,17 @@ BALLAST=0
 
 ## Utils
 
+class ACDaemon(Daemon):
+
+    def __init__(self, config):
+        super().__init__(config['pidfile'])
+        self.cwd = config['server-path']
+
+    def run(self):
+        # TODO: logs?
+        sub.run('./acServer', cwd=self.cwd, shell=True)
+
+
 class ACParser(cp.ConfigParser):
 
     optionxform = str
@@ -626,11 +640,10 @@ def update_acds(steamcmd):
               show_default=True,
               type=click.Path(file_okay=False, dir_okay=True, exists=False),
               help='Path to Steam installation')
-@click.option('--server-config-path',
-              default='steamapps/common/Assetto Corsa Dedicated '
-                      'Server/cfg/server_cfg.ini',
+@click.option('--server-path',
+              default='steamapps/common/Assetto Corsa Dedicated Server/',
               show_default=True,
-              type=SteamPath(file_okay=True, dir_okay=False, exists=False),
+              type=SteamPath(file_okay=False, dir_okay=True, exists=False),
               help='Relative path to --steam-path containing server '
                    'configuration .ini-file')
 @click.option('--steamcmd-path',
@@ -639,8 +652,13 @@ def update_acds(steamcmd):
               type=click.Path(file_okay=False, dir_okay=True, exists=False),
               help='Path to steamcmd installation (will be downloaded '
                    'automatically if it does not exist)')
+@click.option('--pidfile',
+              default=os.path.expanduser('~/.acds.pid'),
+              show_default=True,
+              type=click.Path(file_okay=True, dir_okay=False, exists=False),
+              help='Path to server PID file')
 @click.pass_context
-def cli(ctx, steam_path, server_config_path, steamcmd_path):
+def cli(ctx, steam_path, server_path, steamcmd_path, pidfile):
     # TODO: Steam requires make, gpg, ca-certificates and 32bit libgcc1
     # Steam
     cp = sub.run('command -v steam', shell=True)
@@ -657,14 +675,16 @@ def cli(ctx, steam_path, server_config_path, steamcmd_path):
     steamapps = os.path.join(steam_path, 'steamapps')
     if (not os.path.exists(steam_path) or
             not os.path.exists(steamapps) or
-            not os.path.exists(server_config_path)):
+            not os.path.exists(server_path)):
         update_acds(steamcmd)
 
-    config_file = os.path.join(steam_path, server_config_path)
+    config_file = os.path.join(steam_path, server_path, 'cfg', 'server_cfg.ini')
     parser = make_server_config_parser(config_file)
     ctx.obj = {
         'parser': parser,
+        'pidfile': pidfile,
         'server-config-file': config_file,
+        'server-path': server_path,
         'steamcmd': steamcmd
     }
 
@@ -896,8 +916,18 @@ def start_server(autoupdate):
 ## check status (and logs [TODO])
 # acdsc status
 @cli.command('status')
-def server_status():
-    pass
+@click.pass_obj
+def server_status(config):
+    # TODO: exit codes?
+    daemon = ACDaemon(config)
+    try:
+        pid_exists = psutil.pid_exists(daemon.getpid())
+    except IOError:
+        pid_exists = False
+    if pid_exists:
+        click.secho('Server is running', fg='green')
+    else:
+        click.secho('Server is NOT running', fg='red')
 
 
 ## stop AC Dedicated Server
