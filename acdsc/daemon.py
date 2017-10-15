@@ -56,11 +56,14 @@ class Daemon(object):
     def delpid(self):
         os.remove(self.pidfile)
 
+    def getpid(self):
+        with open(self.pidfile,'r') as pf:
+            return int(pf.read().strip())
+
     def start(self):
         # Check for a pidfile to see if the daemon already runs
         try:
-            with open(self.pidfile,'r') as pf:
-                pid = int(pf.read().strip())
+            pid = self.getpid()
         except IOError:
             pid = None
 
@@ -76,8 +79,7 @@ class Daemon(object):
     def stop(self):
         # Get the pid from the pidfile
         try:
-            with open(self.pidfile,'r') as pf:
-                pid = int(pf.read().strip())
+            pid = self.getpid()
         except IOError:
             pid = None
 
