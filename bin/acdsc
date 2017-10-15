@@ -909,8 +909,21 @@ def gen_entries():
               default=False,
               show_default=True,
               help='Automatically update AC Dedicated Server before launching')
-def start_server(autoupdate):
-    pass
+@click.pass_context
+def start_server(ctx, autoupdate):
+    config = ctx.obj
+    if autoupdate:
+        update_acds(config['steamcmd'])
+    daemon = ACDaemon(config)
+    try:
+        pid_exists = psutil.pid_exists(daemon.getpid())
+    except IOError:
+        pid_exists = False
+    if pid_exists:
+        ctx.fail('Server is already running!')
+    daemon.start()
+    click.secho('Server is starting', fg='green')
+    ctx.invoke(server_status)
 
 
 ## check status (and logs [TODO])
@@ -933,8 +946,12 @@ def server_status(config):
 ## stop AC Dedicated Server
 # acdsc stop
 @cli.command('stop')
-def stop_server():
-    pass
+@click.pass_context
+def stop_server(ctx):
+    config = ctx.obj
+    daemon = ACDaemon(config)
+    daemon.stop()
+    ctx.invoke(server_status)
 
 
 ## update AC Dedicated Server (you can also use --autoupdate -flag with start)
