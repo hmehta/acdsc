@@ -1,6 +1,9 @@
+#!/usr/bin/python3
+
 import atexit
 import os
 import signal
+import subprocess as sub
 import sys
 import time
 
@@ -50,14 +53,14 @@ class Daemon(object):
         atexit.register(self.delpid)
 
         pid = str(os.getpid())
-        with open(self.pidfile,'w+') as f:
+        with open(self.pidfile, 'w+') as f:
             f.write(pid + '\n')
 
     def delpid(self):
         os.remove(self.pidfile)
 
     def getpid(self):
-        with open(self.pidfile,'r') as pf:
+        with open(self.pidfile, 'r') as pf:
             return int(pf.read().strip())
 
     def start(self):
@@ -86,7 +89,7 @@ class Daemon(object):
         if not pid:
             message = 'pidfile {0} does not exist.  Daemon not running?\n'
             sys.stderr.write(message.format(self.pidfile))
-            return # not an error in a restart
+            return  # not an error in a restart
 
         # Try killing the daemon process
         try:
@@ -108,3 +111,14 @@ class Daemon(object):
 
     def run(self):
         pass
+
+
+class ACDaemon(Daemon):
+
+    def __init__(self, config):
+        super().__init__(config['pidfile'])
+        self.cwd = config['server-path']
+
+    def run(self):
+        # TODO: logs?
+        sub.run('./acServer', cwd=self.cwd, shell=True)
