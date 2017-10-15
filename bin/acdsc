@@ -550,7 +550,9 @@ def echo_section(section, options):
 def to_ini(kv):
     key, value = kv
     if value is not None:
-        return (convert_key(key), value.encode('utf-8'))
+        if isinstance(value, str):
+            return (convert_key(key), value.encode('utf-8'))
+        return (convert_key(key), '{}'.format(value))
     return (convert_key(key), value)
 
 
@@ -647,6 +649,31 @@ def add_section(parser, config_file, name, prefix, settings, **kwargs):
     click.secho('Added {}'.format(name), fg='green')
     echo_section(next_section, dict(parser.items(next_section)))
     write_config_file(parser, config_file)
+
+
+def set_in_section(ctx,
+                   parser,
+                   config_file,
+                   idx,
+                   name,
+                   prefix,
+                   settings,
+                   **kwargs):
+    sections = read_sections(parser, prefix)
+    section = '{}_{}'.format(prefix, idx)
+    if section not in sections:
+        ctx.fail('{} does not exist!'.format(section))
+    if all_none(kwargs.values()):
+        click.secho('WARNING: no {} options given!'.format(name), fg='yellow')
+        click.confirm('Do you really want to reset to default {}?'.format(name),
+                      abort=True)
+    for key, value in map(to_ini, kwargs.items()):
+        if value is not None:
+            click.echo('Setting {} to {}'.format(key, value))
+            parser.set(section, key, value)
+    write_config_file(parser, config_file)
+    echo_section(section, dict(parser.items(section)))
+    click.secho('{} values saved!'.format(section), fg='green')
 
 
 ## External dependencies
@@ -748,7 +775,8 @@ def update_acds(steamcmd):
 def cli(ctx, steam_path, server_path, steamcmd_path, pidfile):
     # TODO: Steam requires make, gpg, ca-certificates and 32bit libgcc1
     # Steam
-    cp = sub.run('command -v steam', stdout=sub.PIPE, stderr=sub.PIPE, shell=True)
+    cp = sub.run(
+        'command -v steam', stdout=sub.PIPE, stderr=sub.PIPE, shell=True)
     if cp.returncode != os.EX_OK:
         install_steam()
 
@@ -814,7 +842,7 @@ def server_set(ctx, with_defaults, **kwargs):
     if not all_none(kwargs.values()):
         for key, value in map(to_ini, kwargs.items()):
             if value is None and not parser.has_option('SERVER', key):
-                value = server_settings.get('key', {}).get('default', '')
+                value = server_settings.get(key, {}).get('default', '')
                 click.secho('Setting missing {} to default value {}'.format(
                             key, value))
             else:
@@ -953,6 +981,25 @@ def del_weather(ctx, weather_id):
         ctx, ctx.obj['parser'], ctx.obj['config-file'], 'WEATHER', weather_id)
 
 
+## set weather
+# acdsc weather set
+@weather.command('set')
+@click.argument('weather-id',
+                type=click.IntRange(0),
+                required=True)
+@dynamic_options(weather_settings)
+@click.pass_context
+def set_weather(ctx, weather_id, **kwargs):
+    set_in_section(ctx,
+                   ctx.obj['parser'],
+                   ctx.obj['config-file'],
+                   weather_id,
+                   'weather',
+                   'WEATHER',
+                   weather_settings,
+                   **kwargs)
+
+
 ## Entry list
 @cli.group()
 def entries():
@@ -994,9 +1041,19 @@ def del_entry(ctx, entry_id):
 
 ## set driver details in entry list
 # acdsc set-entry --car 0 --drivername "foobar" --ballast 50 ...
-@cli.command('set-entry')
-def set_entry():
-    pass
+@entries.command('set')
+@click.argument('entry-id', type=click.IntRange(0), required=True)
+@dynamic_options(entry_list_settings)
+@click.pass_context
+def set_entry(ctx, entry_id, **kwargs):
+    set_in_section(ctx,
+                   ctx.obj['entry-parser'],
+                   ctx.obj['entry-list'],
+                   entry_id,
+                   'entry',
+                   'CAR',
+                   entry_list_settings,
+                   **kwargs)
 
 
 ## generate anonymous entries to entry list
@@ -1067,25 +1124,6 @@ def stop_server(ctx):
 @click.pass_obj
 def update_server(config):
     update_acds(config['steamcmd'])
-
-
-# @click.command()
-# @click.option('-c', '--config-file',
-              # default=os.path.join(os.getcwd(), 'cfg', 'entry_list.ini'),
-              # show_default=True,
-              # type=click.Path(file_okay=True, dir_okay=False, exists=True))
-# @click.option('-n', '--num-cars', default=32, show_default=True)
-# @click.argument('model', type=str, nargs=-1)
-# def gen_entry_list(model, num_cars, config_file):
-    # print('Writing {} for {} cars from pool of: {}'.format(
-        # config_file, num_cars, ', '.join(model)))
-    # models = cycle(model)
-    # entry_list = ''
-    # for num in range(0, num_cars):
-        # entry_list += entry_list_template.format(
-            # num=num,
-            # model=next(models))
-    # print(entry_list)
 
 
 if __name__ == '__main__':
